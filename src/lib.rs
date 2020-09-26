@@ -82,9 +82,12 @@ extern crate num_cpus;
 
 use std::fmt;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{sync_channel, SyncSender, Receiver};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
+
+
+const NUM_THREADS_QUEUE_SIZE_RATIO: usize = 200;
 
 trait FnBox {
     fn call_box(self: Box<Self>);
@@ -279,7 +282,7 @@ impl Builder {
     ///     .build();
     /// ```
     pub fn build(self) -> ThreadPool {
-        let (tx, rx) = channel::<Thunk<'static>>();
+        let (tx, rx) = sync_channel::<Thunk<'static>>(NUM_THREADS_QUEUE_SIZE_RATIO);
 
         let num_threads = self.num_threads.unwrap_or_else(num_cpus::get);
 
@@ -344,7 +347,7 @@ pub struct ThreadPool {
     //
     // This is the only such Sender, so when it is dropped all subthreads will
     // quit.
-    jobs: Sender<Thunk<'static>>,
+    jobs: SyncSender<Thunk<'static>>,
     shared_data: Arc<ThreadPoolSharedData>,
 }
 
@@ -425,8 +428,7 @@ impl ThreadPool {
     /// pool.join();
     /// ```
     pub fn execute<F>(&self, job: F)
-    where
-        F: FnOnce() + Send + 'static,
+        where F: FnOnce() + Send + 'static
     {
         self.shared_data.queued_count.fetch_add(1, Ordering::SeqCst);
         self.jobs
@@ -750,8 +752,7 @@ fn spawn_in_pool(shared_data: Arc<ThreadPoolSharedData>) {
                 let message = {
                     // Only lock jobs for the time it takes
                     // to get a job, not run it.
-                    let lock = shared_data
-                        .job_receiver
+                    let lock = shared_data.job_receiver
                         .lock()
                         .expect("Worker thread unable to lock job_receiver");
                     lock.recv()
@@ -918,6 +919,11 @@ mod test {
 
         let (tx, rx) = channel();
 
+        {
+            let pool = pool.clone();
+            let (b0, b1) = (b0.clone(), b1.clone());
+        thread::spawn(move|| {
+
         for i in 0..test_tasks {
             let tx = tx.clone();
             let (b0, b1) = (b0.clone(), b1.clone());
@@ -933,6 +939,8 @@ mod test {
                 tx.send(1).is_ok();
             });
         }
+        });
+        }
 
         b0.wait();
         assert_eq!(pool.active_count(), TEST_TASKS);
@@ -942,11 +950,9 @@ mod test {
         pool.join();
 
         let atomic_active_count = pool.active_count();
-        assert!(
-            atomic_active_count == 0,
-            "atomic_active_count: {}",
-            atomic_active_count
-        );
+        assert!(atomic_active_count == 0,
+                "atomic_active_count: {}",
+                atomic_active_count);
     }
 
     #[test]
@@ -1026,26 +1032,21 @@ mod test {
     fn test_debug() {
         let pool = ThreadPool::new(4);
         let debug = format!("{:?}", pool);
-        assert_eq!(
-            debug,
-            "ThreadPool { name: None, queued_count: 0, active_count: 0, max_count: 4 }"
-        );
+        assert_eq!(debug,
+                   "ThreadPool { name: None, queued_count: 0, active_count: 0, max_count: 4 }");
 
         let pool = ThreadPool::with_name("hello".into(), 4);
         let debug = format!("{:?}", pool);
-        assert_eq!(
-            debug,
-            "ThreadPool { name: Some(\"hello\"), queued_count: 0, active_count: 0, max_count: 4 }"
-        );
+        assert_eq!(debug,
+                   "ThreadPool { name: Some(\"hello\"), queued_count: 0, active_count: 0, \
+                    max_count: 4 }");
 
         let pool = ThreadPool::new(4);
         pool.execute(move || sleep(Duration::from_secs(5)));
         sleep(Duration::from_secs(1));
         let debug = format!("{:?}", pool);
-        assert_eq!(
-            debug,
-            "ThreadPool { name: None, queued_count: 0, active_count: 1, max_count: 4 }"
-        );
+        assert_eq!(debug,
+                   "ThreadPool { name: None, queued_count: 0, active_count: 1, max_count: 4 }");
     }
 
     #[test]
@@ -1114,10 +1115,8 @@ mod test {
         error(format!("pool0.join() complete =-= {:?}", pool1));
         pool1.join();
         error("pool1.join() complete\n".into());
-        assert_eq!(
-            rx.iter().fold(0, |acc, i| acc + i),
-            0 + 1 + 2 + 3 + 4 + 5 + 6 + 7
-        );
+        assert_eq!(rx.iter().fold(0, |acc, i| acc + i),
+                   0 + 1 + 2 + 3 + 4 + 5 + 6 + 7);
     }
 
     #[test]
@@ -1143,9 +1142,7 @@ mod test {
         pool.execute(sleepy_function);
 
         let p_t = pool.clone();
-        thread::spawn(move || {
-            (0..23).map(|_| p_t.execute(sleepy_function)).count();
-        });
+        thread::spawn(move || { (0..23).map(|_| p_t.execute(sleepy_function)).count(); });
 
         pool.join();
     }

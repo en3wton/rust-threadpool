@@ -86,9 +86,6 @@ use std::sync::mpsc::{sync_channel, SyncSender, Receiver};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 
-
-const NUM_THREADS_QUEUE_SIZE_RATIO: usize = 200;
-
 trait FnBox {
     fn call_box(self: Box<Self>);
 }
@@ -162,6 +159,7 @@ pub struct Builder {
     num_threads: Option<usize>,
     thread_name: Option<String>,
     thread_stack_size: Option<usize>,
+    queue_size: Option<usize>
 }
 
 impl Builder {
@@ -179,6 +177,7 @@ impl Builder {
             num_threads: None,
             thread_name: None,
             thread_stack_size: None,
+            queue_size: None
         }
     }
 
@@ -268,6 +267,12 @@ impl Builder {
         self
     }
 
+    
+    pub fn queue_size(mut self, size: usize) -> Builder {
+        self.queue_size = Some(size);
+        self
+    }
+
     /// Finalize the [`Builder`] and build the [`ThreadPool`].
     ///
     /// [`Builder`]: struct.Builder.html
@@ -282,7 +287,7 @@ impl Builder {
     ///     .build();
     /// ```
     pub fn build(self) -> ThreadPool {
-        let (tx, rx) = sync_channel::<Thunk<'static>>(NUM_THREADS_QUEUE_SIZE_RATIO);
+        let (tx, rx) = sync_channel::<Thunk<'static>>(self.queue_size.unwrap_or(200));
 
         let num_threads = self.num_threads.unwrap_or_else(num_cpus::get);
 
